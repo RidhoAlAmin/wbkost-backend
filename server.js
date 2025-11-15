@@ -4,19 +4,40 @@ require('dotenv').config();
 
 // Database connection
 const connectDB = require('./config/database');
+
+// Force check MONGODB_URI before starting
+if (!process.env.MONGODB_URI) {
+  console.error('❌ MONGODB_URI environment variable is required');
+  console.error('💡 Please set MONGODB_URI in your environment variables');
+  process.exit(1);
+}
+
+console.log('🔧 Environment Check:');
+console.log('   NODE_ENV:', process.env.NODE_ENV);
+console.log('   PORT:', process.env.PORT);
+console.log('   MONGODB_URI:', process.env.MONGODB_URI ? '✅ Set' : '❌ Missing');
+
+// Connect to database
 connectDB();
 
 // Route imports
 const authRoutes = require('./routes/authRoutes');
 const productRoutes = require('./routes/productRoutes');
-const postRoutes = require('./routes/postRoutes'); // NEW: Post routes
+const postRoutes = require('./routes/postRoutes');
 
 const app = express();
 
 // =======================
 // MIDDLEWARE
 // =======================
-app.use(cors());
+app.use(cors({
+  origin: [
+    'http://localhost:3000',
+    'https://wbkost.vercel.app',
+    'https://wbkost-frontend.vercel.app'
+  ],
+  credentials: true
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -26,16 +47,23 @@ app.use(express.urlencoded({ extended: true }));
 
 // Root route - Server status
 app.get('/', (req, res) => {
+  const mongoose = require('mongoose');
+  
   res.json({ 
     success: true,
     message: '🎉 WBKost Server BERHASIL JALAN!',
     version: '1.0.0',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV,
+    database: {
+      connected: mongoose.connection.readyState === 1,
+      host: mongoose.connection.host,
+      name: mongoose.connection.name
+    },
     endpoints: {
       auth: '/api/auth',
       products: '/api/products',
-      posts: '/api/posts', // NEW: Posts endpoint
+      posts: '/api/posts',
       docs: 'Coming soon...'
     }
   });
@@ -59,7 +87,8 @@ app.get('/test-db', async (req, res) => {
         status: statusMessages[dbStatus] || 'Unknown',
         readyState: dbStatus,
         name: mongoose.connection.name,
-        host: mongoose.connection.host
+        host: mongoose.connection.host,
+        connectionString: process.env.MONGODB_URI ? '✅ Set' : '❌ Missing'
       }
     });
   } catch (error) {
@@ -116,7 +145,7 @@ app.get('/test-product-model', async (req, res) => {
   }
 });
 
-// Post model test route - NEW
+// Post model test route
 app.get('/test-post-model', async (req, res) => {
   try {
     const Post = require('./models/Post');
@@ -150,18 +179,25 @@ app.get('/server-info', (req, res) => {
       platform: process.platform,
       uptime: process.uptime(),
       memory: process.memoryUsage(),
-      environment: process.env.NODE_ENV
+      environment: process.env.NODE_ENV,
+      port: process.env.PORT
     },
     database: {
       connected: mongoose.connection.readyState === 1,
       name: mongoose.connection.name,
-      host: mongoose.connection.host
+      host: mongoose.connection.host,
+      readyState: mongoose.connection.readyState
     },
     features: {
       authentication: true,
       productManagement: true,
-      communityPosts: true, // NEW: Posts feature
+      communityPosts: true,
       fileUpload: true
+    },
+    environment: {
+      MONGODB_URI: process.env.MONGODB_URI ? '✅ Set' : '❌ Missing',
+      JWT_SECRET: process.env.JWT_SECRET ? '✅ Set' : '❌ Missing',
+      NODE_ENV: process.env.NODE_ENV || 'development'
     }
   });
 });
@@ -171,7 +207,7 @@ app.get('/server-info', (req, res) => {
 // =======================
 app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);
-app.use('/api/posts', postRoutes); // NEW: Post routes
+app.use('/api/posts', postRoutes);
 
 // =======================
 // ERROR HANDLING
@@ -198,7 +234,7 @@ app.use('*', (req, res) => {
         'PUT /api/products/:id',
         'DELETE /api/products/:id'
       ],
-      posts: [ // NEW: Post endpoints
+      posts: [
         'GET /api/posts',
         'POST /api/posts',
         'POST /api/posts/:id/like',
@@ -209,7 +245,7 @@ app.use('*', (req, res) => {
         'GET /test-db',
         'GET /test-user-model',
         'GET /test-product-model',
-        'GET /test-post-model', // NEW: Post test
+        'GET /test-post-model',
         'GET /server-info'
       ]
     }
@@ -247,6 +283,14 @@ app.use((err, req, res, next) => {
     });
   }
   
+  // MongoDB connection error
+  if (err.name === 'MongoNetworkError' || err.name === 'MongoTimeoutError') {
+    return res.status(500).json({
+      success: false,
+      error: 'Database connection failed. Please check your MONGODB_URI.'
+    });
+  }
+
   // Default error
   res.status(500).json({ 
     success: false,
@@ -257,30 +301,51 @@ app.use((err, req, res, next) => {
 });
 
 // =======================
+// GRACEFUL SHUTDOWN
+// =======================
+process.on('SIGINT', async () => {
+  console.log('\n⚠️  Shutting down server gracefully...');
+  const mongoose = require('mongoose');
+  await mongoose.connection.close();
+  console.log('✅ MongoDB connection closed.');
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('\n⚠️  Server terminated gracefully...');
+  const mongoose = require('mongoose');
+  await mongoose.connection.close();
+  console.log('✅ MongoDB connection closed.');
+  process.exit(0);
+});
+
+// =======================
 // START SERVER
 // =======================
 const PORT = process.env.PORT || 5000;
 
 const server = app.listen(PORT, () => {
+  const mongoose = require('mongoose');
+  
   console.log('='.repeat(60));
   console.log('🚀 WBKOST SERVER STARTED SUCCESSFULLY!');
   console.log('📡 Server URL: http://localhost:' + PORT);
   console.log('🌍 Environment: ' + (process.env.NODE_ENV || 'development'));
   console.log('⏰ Started at: ' + new Date().toISOString());
-  console.log('💾 Database: ' + (process.env.MONGODB_URI || 'mongodb://localhost:27017/wbkost'));
+  console.log('💾 Database: ' + (mongoose.connection.host || 'Connecting...'));
+  console.log('='.repeat(60));
+  console.log('🔧 Environment Check:');
+  console.log('   MONGODB_URI:', process.env.MONGODB_URI ? '✅ Set' : '❌ MISSING!');
+  console.log('   JWT_SECRET:', process.env.JWT_SECRET ? '✅ Set' : '❌ MISSING!');
+  console.log('   NODE_ENV:', process.env.NODE_ENV || 'development');
   console.log('='.repeat(60));
   console.log('📋 Available Test Routes:');
   console.log('   GET  /                 - Server status');
   console.log('   GET  /test-db          - Database connection test');
   console.log('   GET  /test-user-model  - User model test');
   console.log('   GET  /test-product-model - Product model test');
-  console.log('   GET  /test-post-model  - Post model test'); // NEW
+  console.log('   GET  /test-post-model  - Post model test');
   console.log('   GET  /server-info      - Server information');
-  console.log('='.repeat(60));
-  console.log('🆕 NEW FEATURES:');
-  console.log('   ✅ X-Style Community Posts');
-  console.log('   ✅ Like/Engagement System');
-  console.log('   ✅ Hashtag & Mention Support');
   console.log('='.repeat(60));
 });
 
